@@ -1,36 +1,44 @@
-var router = require('express').Router();
-var mongoose = require('mongoose');
-var Article = mongoose.model('Article');
-var Comment = mongoose.model('Comment');
-var User = mongoose.model('User');
-var auth = require('../auth');
+const router = require('express').Router();
+const mongoose = require('mongoose');
 
-//lấy article params
-router.param('article', (req, res, next, slug) =>{
-  Article.findOne({ slug: slug })
-    .populate('author')
-    .then(function (article) {
-      if (!article) { return res.sendStatus(404); }
+const Article = mongoose.model('Article');
+const Comment = mongoose.model('Comment');
+const User = mongoose.model('User');
+const auth = require('../auth');
 
-      req.article = article;
-      return next();
-    }).catch(next);
+// lấy article params
+router.param('article', async (req, res, next, slug) => {
+  try {
+    const article = await Article.findOne({ slug }).populate('author');
+    if (!article) {
+      return res.sendStatus(404);
+    }
+    req.article = article;
+    return next();
+  } catch (err) {
+    next();
+  }
 });
-//method lấy params comment
-router.param('comment',  (req, res, next, id) =>{
-  Comment.findById(id).then(function (comment) {
-    if (!comment) { return res.sendStatus(404); }
+// method lấy params comment
+router.param('comment', async (req, res, next, id) => {
+  try {
+    const comment = await Comment.findById(id);
+    if (!comment) {
+      return res.sendStatus(404);
+    }
 
     req.comment = comment;
-
     return next();
-  }).catch(next);
+  } catch (err) {
+    next();
+  }
 });
 
-router.get('/', auth.optional,  (req, res, next) =>{
-  var query = {};
-  var limit = 20;
-  var offset = 0;
+// get article
+router.get('/', auth.optional, async (req, res, next) => {
+  const query = {};
+  let limit = 20;
+  let offset = 0;
 
   if (typeof req.query.limit !== 'undefined') {
     limit = req.query.limit;
@@ -41,16 +49,17 @@ router.get('/', auth.optional,  (req, res, next) =>{
   }
 
   if (typeof req.query.tag !== 'undefined') {
-    query.tagList = { "$in": [req.query.tag] };
+    query.tagList = { $in: [req.query.tag] };
   }
-
-  Promise.all([
-    req.query.author ? User.findOne({ username: req.query.author }) : null,
-    req.query.favorited ? User.findOne({ username: req.query.favorited }) : null
-  ]).then(function (results) {
-    var author = results[0];
-    var favoriter = results[1];
-
+  try {
+    const results = Promise.all([
+      req.query.author ? User.findOne({ username: req.query.author }) : null,
+      req.query.favorited
+        ? User.findOne({ username: req.query.favorited })
+        : null,
+    ]);
+    const author = results[0];
+    const favoriter = results[1];
     if (author) {
       query.author = author._id;
     }
@@ -60,8 +69,7 @@ router.get('/', auth.optional,  (req, res, next) =>{
     } else if (req.query.favorited) {
       query._id = { $in: [] };
     }
-
-    return Promise.all([
+    const data = await Promise.all([
       Article.find(query)
         .limit(Number(limit))
         .skip(Number(offset))
@@ -70,24 +78,23 @@ router.get('/', auth.optional,  (req, res, next) =>{
         .exec(),
       Article.count(query).exec(),
       req.payload ? User.findById(req.payload.id) : null,
-    ]).then(function (results) {
-      var articles = results[0];
-      var articlesCount = results[1];
-      var user = results[2];
-
-      return res.json({
-        articles: articles.map(function (article) {
-          return article.toJSONFor(user);
-        }),
-        articlesCount: articlesCount
-      });
+    ]);
+    const articles = data[0];
+    const articlesCount = data[1];
+    const user = data[2];
+    return res.json({
+      articles: articles.map(article => article.toJSONFor(user)),
+      articlesCount,
     });
-  }).catch(next);
+  } catch (err) {
+    next();
+  }
 });
 
-router.get('/feed', auth.required,  (req, res, next) =>{
-  var limit = 20;
-  var offset = 0;
+// get feed
+router.get('/feed', auth.required, async (req, res, next) => {
+  let limit = 20;
+  let offset = 0;
 
   if (typeof req.query.limit !== 'undefined') {
     limit = req.query.limit;
@@ -96,61 +103,68 @@ router.get('/feed', auth.required,  (req, res, next) =>{
   if (typeof req.query.offset !== 'undefined') {
     offset = req.query.offset;
   }
-
-  User.findById(req.payload.id).then(function (user) {
-    if (!user) { return res.sendStatus(401); }
-
-    Promise.all([
+  try {
+    const user = await User.findById(req.payload.id);
+    if (!user) {
+      return res.sendStatus(401);
+    }
+    const results = await Promise.all([
       Article.find({ author: { $in: user.following } })
         .limit(Number(limit))
         .skip(Number(offset))
         .populate('author')
         .exec(),
-      Article.count({ author: { $in: user.following } })
-    ]).then(function (results) {
-      var articles = results[0];
-      var articlesCount = results[1];
-
-      return res.json({
-        articles: articles.map(function (article) {
-          return article.toJSONFor(user);
-        }),
-        articlesCount: articlesCount
-      });
-    }).catch(next);
-  });
+      Article.count({ author: { $in: user.following } }),
+    ]);
+    const articles = results[0];
+    const articlesCount = results[1];
+    return res.json({
+      articles: articles.map(article => article.toJSONFor(user)),
+      articlesCount,
+    });
+  } catch (err) {
+    next();
+  }
 });
 
-router.post('/', auth.required,  (req, res, next) =>{
-  User.findById(req.payload.id).then(function (user) {
-    if (!user) { return res.sendStatus(401); }
-
-    var article = new Article(req.body.article);
+// create an article
+router.post('/', auth.required, async (req, res, next) => {
+  try {
+    const user = await User.findById(req.payload.id);
+    if (!user) {
+      return res.sendStatus(401);
+    }
+    const article = new Article(req.body.article);
 
     article.author = user;
-
-    return article.save().then(function () {
-      console.log(article.author);
-      return res.json({ article: article.toJSONFor(user) });
-    });
-  }).catch(next);
+    await article.save();
+    return res.json({ article: article.toJSONFor(user) });
+  } catch (err) {
+    next();
+  }
 });
 
 // return a article
-router.get('/:article', auth.optional,  (req, res, next) =>{
-  Promise.all([
-    req.payload ? User.findById(req.payload.id) : null,
-    req.article.populate('author').execPopulate()
-  ]).then(function (results) {
-    var user = results[0];
-
+router.get('/:article', auth.optional, async (req, res, next) => {
+  try {
+    const results = await Promise.all([
+      req.payload ? User.findById(req.payload.id) : null,
+      req.article.populate('author').execPopulate(),
+    ]);
+    const user = results[0];
+    const article = results[1];
+    // console.log(results)
     return res.json({ article: req.article.toJSONFor(user) });
-  }).catch(next);
+  } catch (err) {
+    next();
+    console.log(err);
+  }
 });
 
 // update article
-router.put('/:article', auth.required,  (req, res, next) =>{
-  User.findById(req.payload.id).then(function (user) {
+router.put('/:article', auth.required, async (req, res, next) => {
+  try {
+    const user = await User.findById(req.payload.id);
     if (req.article.author._id.toString() === req.payload.id.toString()) {
       if (typeof req.body.article.title !== 'undefined') {
         req.article.title = req.body.article.title;
@@ -165,117 +179,125 @@ router.put('/:article', auth.required,  (req, res, next) =>{
       }
 
       if (typeof req.body.article.tagList !== 'undefined') {
-        req.article.tagList = req.body.article.tagList
+        req.article.tagList = req.body.article.tagList;
       }
-
-      req.article.save().then(function (article) {
-        return res.json({ article: article.toJSONFor(user) });
-      }).catch(next);
-    } else {
-      return res.sendStatus(403);
+      const article = await req.article.save();
+      return res.json({ article: article.toJSONFor(user) });
     }
-  });
+    return res.sendStatus(403);
+  } catch (err) {
+    next();
+  }
 });
 
 // delete article
-router.delete('/:article', auth.required,  (req, res, next) =>{
-  User.findById(req.payload.id).then(function (user) {
-    if (!user) { return res.sendStatus(401); }
-
-    if (req.article.author._id.toString() === req.payload.id.toString()) {
-      return req.article.remove().then(function () {
-        return res.sendStatus(204);
-      });
-    } else {
-      return res.sendStatus(403);
+router.delete('/:article', auth.required, async (req, res, next) => {
+  try {
+    const user = await User.findById(req.payload.id);
+    if (!user) {
+      return res.sendStatus(401);
     }
-  }).catch(next);
+    if (req.article.author._id.toString() === req.payload.id.toString()) {
+      await req.article.remove();
+      return res.sendStatus(204);
+    }
+    return res.sendStatus(403);
+  } catch (error) {
+    return res.json({ err: error });
+  }
 });
 
 // Favorite an article
-router.post('/:article/favorite', auth.required,  (req, res, next) =>{
-  var articleId = req.article._id;
-
-  User.findById(req.payload.id).then(function (user) {
-    if (!user) { return res.sendStatus(401); }
-
-    return user.favorite(articleId).then(function () {
-      return req.article.updateFavoriteCount().then(function (article) {
-        return res.json({ article: article.toJSONFor(user) });
-      });
-    });
-  }).catch(next);
+router.post('/:article/favorite', auth.required, async (req, res, next) => {
+  const articleId = req.article._id;
+  try {
+    const user = await User.findById(req.payload.id);
+    if (!user) {
+      return res.sendStatus(401);
+    }
+    await user.favorite(articleId);
+    const article = await req.article.updateFavoriteCount();
+    return res.json({ article: article.toJSONFor(user) });
+  } catch (error) {
+    return res.json({ err: error });
+  }
 });
 
 // Unfavorite an article
-router.delete('/:article/favorite', auth.required,  (req, res, next) =>{
-  var articleId = req.article._id;
-
-  User.findById(req.payload.id).then(function (user) {
-    if (!user) { return res.sendStatus(401); }
-
-    return user.unfavorite(articleId).then(function () {
-      return req.article.updateFavoriteCount().then(function (article) {
-        return res.json({ article: article.toJSONFor(user) });
-      });
-    });
-  }).catch(next);
+router.delete('/:article/favorite', auth.required, async (req, res, next) => {
+  const articleId = req.article._id;
+  try {
+    const user = await User.findById(req.payload.id);
+    if (!user) {
+      return res.sendStatus(401);
+    }
+    await user.unfavorite(articleId);
+    const article = await req.article.updateFavoriteCount();
+    return res.json({ article: article.toJSONFor(user) });
+  } catch (err) {}
 });
 
 // return an article's comments
-router.get('/:article/comments', auth.optional,  (req, res, next) =>{
-  Promise.resolve(req.payload ? User.findById(req.payload.id) : null).then(function (user) {
-    return req.article.populate({
-      path: 'comments',
-      populate: {
-        path: 'author'
-      },
-      options: {
-        sort: {
-          createdAt: 'desc'
-        }
-      }
-    }).execPopulate().then(function (article) {
-      return res.json({
-        comments: req.article.comments.map(function (comment) {
-          return comment.toJSONFor(user);
-        })
-      });
+router.get('/:article/comments', auth.optional, async (req, res, next) => {
+  try {
+    const user = await Promise.resolve(req.payload ? User.findById(req.payload.id) : null);
+    const article = await req.article
+      .populate({
+        path: 'comments',
+        populate: {
+          path: 'author',
+        },
+        options: {
+          sort: {
+            createdAt: 'desc',
+          },
+        },
+      })
+      .execPopulate();
+    return res.json({
+      comments: req.article.comments.map(comment =>
+        // console.log('comment', comment);
+        comment.toJSONFor(user)),
     });
-  }).catch(next);
+  } catch (error) {
+    return res.json({ err: error });
+  }
 });
 
 // create a new comment
-router.post('/:article/comments', auth.required,  (req, res, next) =>{
-  
-  User.findById(req.payload.id).then(function (user) {
-    if (!user) { return res.sendStatus(401); }
-
-    var comment = new Comment(req.body.comment);
+router.post('/:article/comments', auth.required, async (req, res, next) => {
+  try {
+    const user = await User.findById(req.payload.id);
+    if (!user) {
+      return res.sendStatus(401);
+    }
+    const comment = new Comment(req.body.comment);
     comment.article = req.article;
     comment.author = user;
 
-    return comment.save().then(function () {
-      req.article.comments.push(comment);
-
-      return req.article.save().then(function (article) {
-        res.json({ comment: comment.toJSONFor(user) });
-      });
-    });
-  }).catch(next);
-});
-
-router.delete('/:article/comments/:comment', auth.required,  (req, res, next) =>{
-  if (req.comment.author.toString() === req.payload.id.toString()) {
-    req.article.comments.remove(req.comment._id);
-    req.article.save()
-      .then(Comment.find({ _id: req.comment._id }).remove().exec())
-      .then(function () {
-        res.sendStatus(204);
-      });
-  } else {
-    res.sendStatus(403);
+    await comment.save();
+    req.article.comments.push(comment);
+    const article = req.article.save();
+    return res.json({ comment: comment.toJSONFor(user) });
+  } catch (error) {
+    return res.json({ err: error });
   }
 });
+// delete a comment
+router.delete(
+  '/:article/comments/:comment',
+  auth.required,
+  async (req, res, next) => {
+    if (req.comment.author.toString() === req.payload.id.toString()) {
+      req.article.comments.remove(req.comment._id);
+      await req.article.save();
+      await Comment.find({ _id: req.comment._id })
+        .remove()
+        .exec();
+      return res.sendStatus(204);
+    }
+    return res.sendStatus(403);
+  },
+);
 
 module.exports = router;
